@@ -48,15 +48,16 @@ class Transaction(BaseModel):
 
 
 class TransactionValidator:
-    """Validator for checking transaction balance consistency."""
+    """Validator for checking transaction balance consistency with smart sign correction."""
     
     @staticmethod
     def validate_transaction_balances(transactions: List[Transaction]) -> bool:
         """
         Validate that transaction balances are mathematically consistent.
+        Automatically corrects sign errors in extracted balances.
         
         Args:
-            transactions: List of Transaction objects
+            transactions: List of Transaction objects (will be modified in place if corrections are made)
             
         Returns:
             bool: True if balances are consistent, False otherwise
@@ -84,6 +85,29 @@ class TransactionValidator:
             balance_difference = abs(calculated_balance - transaction.balance)
             
             if balance_difference > 0.01:  # More than 1 cent difference
+                # Check if the issue is just a sign error (same absolute value, different sign)
+                if abs(abs(calculated_balance) - abs(transaction.balance)) <= 0.01:
+                    # This is likely a sign error - try correcting it
+                    corrected_balance = -transaction.balance
+                    corrected_difference = abs(calculated_balance - corrected_balance)
+                    
+                    if corrected_difference <= 0.01:  # Correction works!
+                        print(f"🔧 Sign correction applied at transaction {i+1}:")
+                        print(f"   Date: {transaction.date}")
+                        print(f"   Description: {transaction.description}")
+                        print(f"   Amount: {transaction.amount:.2f}")
+                        print(f"   Original balance: {transaction.balance:.2f}")
+                        print(f"   Corrected balance: {corrected_balance:.2f}")
+                        print(f"   Expected balance: {calculated_balance:.2f}")
+                        print(f"   Difference after correction: {corrected_difference:.4f}")
+                        
+                        # Update the transaction with the corrected balance
+                        transaction.balance = corrected_balance
+                        calculated_balance = corrected_balance
+                        print(f"✓ Transaction {i+1}: {transaction.amount:.2f} -> Balance: {transaction.balance:.2f} (corrected)")
+                        continue
+                
+                # If we get here, it's not a simple sign error
                 print(f"❌ Balance validation failed at transaction {i+1}:")
                 print(f"   Date: {transaction.date}")
                 print(f"   Description: {transaction.description}")
@@ -129,8 +153,11 @@ class BankStatementExtractor:
               - If the amount has "Kt" or "Cr" it's a credit (positive value)
               - Otherwise it's a debit (negative value)
             - Balance (convert to decimal format with period as decimal separator, no thousands separator)
+              - CRITICAL: Account balances can be negative (overdrawn)
               - If the balance has "Kt" or "Cr" it's a credit (positive value)
-              - Otherwise it's a debit (negative value)
+              - If the balance appears without "Kt" or "Cr", or in parentheses () or with a minus sign, it's negative
+              - If the account is overdrawn (negative balance), the balance should be negative
+              - Consider the mathematical relationship: previous_balance + transaction_amount = new_balance
             
             Only extract actual transaction rows, not headers or summary information.
             Ignore any metadata, account information, or non-transaction data.
