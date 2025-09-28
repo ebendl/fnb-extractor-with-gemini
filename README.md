@@ -9,6 +9,10 @@ A Python script that uses Google's Gemini 2.5 Flash model to extract transaction
 - Converts data to CSV format with semicolon separators
 - Handles credit/debit amounts correctly
 - Validates date formats and numeric values
+- Batch processing for entire folders of PDFs
+- Transaction balance validation for data integrity
+- Token counting for API usage monitoring
+- CSV file combination utility for merging multiple transaction files
 
 ## Setup
 
@@ -31,13 +35,31 @@ You can get your API key from [Google AI Studio](https://aistudio.google.com/app
 
 ## Usage
 
+### Extract Transactions from PDFs
+
 ```bash
-python bank_statement_extractor.py <path_to_pdf_file>
+python bank_statement_extractor.py <path_to_pdf_file_or_folder>
+```
+
+Examples:
+```bash
+# Process a single PDF file
+python bank_statement_extractor.py samples/FNB_FUSION_PRIVATE_CLIENTS_ACC_226.pdf
+
+# Process all PDFs in a folder (skips files that already have CSV outputs)
+python bank_statement_extractor.py /path/to/pdf/folder/
+```
+
+### Combine CSV Files
+
+```bash
+python combine_csv_files.py <directory_path>
 ```
 
 Example:
 ```bash
-python bank_statement_extractor.py samples/FNB_FUSION_PRIVATE_CLIENTS_ACC_226.pdf
+# Combine all CSV files in a directory into one file
+python combine_csv_files.py /path/to/csv/folder/
 ```
 
 ## Output Format
