@@ -47,6 +47,59 @@ class Transaction(BaseModel):
         return float(v)
 
 
+class TransactionValidator:
+    """Validator for checking transaction balance consistency."""
+    
+    @staticmethod
+    def validate_transaction_balances(transactions: List[Transaction]) -> bool:
+        """
+        Validate that transaction balances are mathematically consistent.
+        
+        Args:
+            transactions: List of Transaction objects
+            
+        Returns:
+            bool: True if balances are consistent, False otherwise
+        """
+        if not transactions:
+            print("No transactions to validate")
+            return False
+        
+        # Sort transactions by date to ensure proper order
+        sorted_transactions = sorted(transactions, key=lambda x: x.date)
+        
+        # Start with the first transaction's balance minus its amount to get the starting balance
+        first_transaction = sorted_transactions[0]
+        calculated_balance = first_transaction.balance - first_transaction.amount
+        
+        print(f"Starting balance: {calculated_balance:.2f}")
+        print(f"First transaction: {first_transaction.amount:.2f} -> Balance: {first_transaction.balance:.2f}")
+        
+        # Validate each subsequent transaction
+        for i, transaction in enumerate(sorted_transactions):
+            # Add the transaction amount to get the new balance
+            calculated_balance += transaction.amount
+            
+            # Check if the calculated balance matches the extracted balance (within 1 cent tolerance)
+            balance_difference = abs(calculated_balance - transaction.balance)
+            
+            if balance_difference > 0.01:  # More than 1 cent difference
+                print(f"❌ Balance validation failed at transaction {i+1}:")
+                print(f"   Date: {transaction.date}")
+                print(f"   Description: {transaction.description}")
+                print(f"   Amount: {transaction.amount:.2f}")
+                print(f"   Expected balance: {calculated_balance:.2f}")
+                print(f"   Extracted balance: {transaction.balance:.2f}")
+                print(f"   Difference: {balance_difference:.2f}")
+                return False
+            else:
+                print(f"✓ Transaction {i+1}: {transaction.amount:.2f} -> Balance: {transaction.balance:.2f} (diff: {balance_difference:.4f})")
+        
+        print(f"✅ All {len(transactions)} transactions validated successfully!")
+        print(f"Final balance: {calculated_balance:.2f}")
+        return True
+
+
 class BankStatementExtractor:
     """Main class for extracting bank statement data from PDFs."""
     
@@ -111,6 +164,16 @@ class BankStatementExtractor:
             
             # Parse the structured response
             transactions = response.parsed
+            
+            # Validate transaction balances
+            print("\n🔍 Validating transaction balances...")
+            is_valid = TransactionValidator.validate_transaction_balances(transactions)
+            
+            if is_valid:
+                print("✅ Data extraction validation: SUCCESS - All balances are mathematically consistent")
+            else:
+                print("❌ Data extraction validation: FAILED - Balance inconsistencies detected")
+            
             return transactions
             
         except Exception as e:
@@ -190,8 +253,10 @@ def main():
     # Save to CSV
     extractor.save_transactions_to_csv(transactions, str(output_path))
     
-    print(f"Extraction complete! Found {len(transactions)} transactions.")
-    print(f"Output saved to: {output_path}")
+    print(f"\n📊 Extraction Summary:")
+    print(f"   Transactions found: {len(transactions)}")
+    print(f"   Output saved to: {output_path}")
+    print(f"   Data validation: {'✅ PASSED' if TransactionValidator.validate_transaction_balances(transactions) else '❌ FAILED'}")
 
 
 if __name__ == "__main__":
