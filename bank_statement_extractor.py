@@ -210,6 +210,85 @@ class BankStatementExtractor:
             print(f"Error saving transactions to CSV: {str(e)}")
 
 
+def process_single_pdf(extractor: BankStatementExtractor, pdf_path: str) -> bool:
+    """
+    Process a single PDF file and extract transactions.
+    
+    Args:
+        extractor: BankStatementExtractor instance
+        pdf_path: Path to the PDF file
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        print(f"\n📄 Processing: {Path(pdf_path).name}")
+        print("=" * 60)
+        
+        # Extract transactions
+        transactions = extractor.extract_transactions_from_pdf(pdf_path)
+        
+        if not transactions:
+            print("❌ No transactions found or extraction failed.")
+            return False
+        
+        # Generate output filename
+        pdf_file = Path(pdf_path)
+        output_path = pdf_file.with_suffix('.csv')
+        
+        # Save to CSV
+        extractor.save_transactions_to_csv(transactions, str(output_path))
+        
+        print(f"\n📊 Extraction Summary:")
+        print(f"   Transactions found: {len(transactions)}")
+        print(f"   Output saved to: {output_path}")
+        print(f"   Data validation: {'✅ PASSED' if TransactionValidator.validate_transaction_balances(transactions) else '❌ FAILED'}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error processing {pdf_path}: {str(e)}")
+        return False
+
+
+def find_pdfs_to_process(folder_path: str) -> List[str]:
+    """
+    Find all PDF files in a folder that don't have corresponding CSV outputs.
+    
+    Args:
+        folder_path: Path to the folder to scan
+        
+    Returns:
+        List of PDF file paths that need processing
+    """
+    folder = Path(folder_path)
+    
+    if not folder.exists():
+        print(f"Error: Folder '{folder_path}' not found.")
+        return []
+    
+    if not folder.is_dir():
+        print(f"Error: '{folder_path}' is not a directory.")
+        return []
+    
+    pdf_files = list(folder.glob("*.pdf"))
+    pdfs_to_process = []
+    
+    print(f"🔍 Scanning folder: {folder_path}")
+    print(f"   Found {len(pdf_files)} PDF files")
+    
+    for pdf_file in pdf_files:
+        csv_file = pdf_file.with_suffix('.csv')
+        
+        if csv_file.exists():
+            print(f"   ⏭️  Skipping {pdf_file.name} (CSV already exists)")
+        else:
+            print(f"   📋 Queueing {pdf_file.name} for processing")
+            pdfs_to_process.append(str(pdf_file))
+    
+    return pdfs_to_process
+
+
 def main():
     """Main function to run the bank statement extractor."""
     
@@ -225,38 +304,56 @@ def main():
     
     # Check command line arguments
     if len(sys.argv) != 2:
-        print("Usage: python bank_statement_extractor.py <pdf_file_path>")
+        print("Usage: python bank_statement_extractor.py <folder_path_or_pdf_file>")
+        print("       - If folder: processes all PDFs without existing CSV outputs")
+        print("       - If file: processes single PDF file")
         sys.exit(1)
     
-    pdf_path = sys.argv[1]
+    input_path = sys.argv[1]
     
-    # Validate PDF file exists
-    if not os.path.exists(pdf_path):
-        print(f"Error: PDF file '{pdf_path}' not found.")
+    # Validate input path exists
+    if not os.path.exists(input_path):
+        print(f"Error: Path '{input_path}' not found.")
         sys.exit(1)
     
     # Create extractor instance
     extractor = BankStatementExtractor(api_key)
     
-    # Extract transactions
-    print(f"Extracting transactions from {pdf_path}...")
-    transactions = extractor.extract_transactions_from_pdf(pdf_path)
+    # Determine if input is a file or folder
+    if os.path.isfile(input_path):
+        # Single file processing
+        if not input_path.lower().endswith('.pdf'):
+            print("Error: File must be a PDF.")
+            sys.exit(1)
+        
+        success = process_single_pdf(extractor, input_path)
+        sys.exit(0 if success else 1)
     
-    if not transactions:
-        print("No transactions found or extraction failed.")
-        sys.exit(1)
-    
-    # Generate output filename
-    pdf_file = Path(pdf_path)
-    output_path = pdf_file.with_suffix('.csv')
-    
-    # Save to CSV
-    extractor.save_transactions_to_csv(transactions, str(output_path))
-    
-    print(f"\n📊 Extraction Summary:")
-    print(f"   Transactions found: {len(transactions)}")
-    print(f"   Output saved to: {output_path}")
-    print(f"   Data validation: {'✅ PASSED' if TransactionValidator.validate_transaction_balances(transactions) else '❌ FAILED'}")
+    else:
+        # Folder processing
+        pdfs_to_process = find_pdfs_to_process(input_path)
+        
+        if not pdfs_to_process:
+            print("\n✅ No PDFs need processing - all have corresponding CSV files!")
+            sys.exit(0)
+        
+        print(f"\n🚀 Processing {len(pdfs_to_process)} PDF files...")
+        
+        successful = 0
+        failed = 0
+        
+        for pdf_path in pdfs_to_process:
+            if process_single_pdf(extractor, pdf_path):
+                successful += 1
+            else:
+                failed += 1
+        
+        print(f"\n🎯 Batch Processing Complete:")
+        print(f"   ✅ Successful: {successful}")
+        print(f"   ❌ Failed: {failed}")
+        print(f"   📊 Total: {len(pdfs_to_process)}")
+        
+        sys.exit(0 if failed == 0 else 1)
 
 
 if __name__ == "__main__":
