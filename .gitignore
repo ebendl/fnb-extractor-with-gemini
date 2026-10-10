@@ -64,3 +64,6 @@ Thumbs.db
 
 # Output CSV files
 *.csv
+
+# Sample bank statements (real data)
+samples/
