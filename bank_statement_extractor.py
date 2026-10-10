@@ -9,8 +9,9 @@ with structured output via Pydantic models.
 import os
 import sys
 import csv
+import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
 import re
 
@@ -18,6 +19,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
+
 
 
 class Transaction(BaseModel):
@@ -124,12 +126,89 @@ class TransactionValidator:
         return True
 
 
+def decrypt_pdf_if_needed(pdf_path: str, password: Optional[str]) -> Tuple[str, bool]:
+    """
+    Attempts to decrypt a PDF file using qpdf if necessary.
+    
+    Args:
+        pdf_path: Path to the PDF file.
+        password: Password to use for decryption if needed.
+        
+    Returns:
+        Tuple[str, bool]: A tuple containing:
+            - Path to the PDF file to use (either the original, or a temp decrypted one).
+            - A boolean indicating if the returned path is a temporary file that needs cleanup.
+    """
+    path_obj = Path(pdf_path)
+    
+    try:
+        # Check if PDF is encrypted
+        # qpdf --is-encrypted returns 0 if encrypted, 2 if not encrypted
+        result = subprocess.run(
+            ["qpdf", "--is-encrypted", str(path_obj)],
+            capture_output=True
+        )
+        if result.returncode == 2:
+            # Not encrypted, use original path
+            return pdf_path, False
+    except Exception as e:
+        print(f"Error checking if PDF is encrypted: {e}")
+        # Fallback to trying to decrypt or read directly
+        return pdf_path, False
+        
+    # PDF is encrypted. Let's try to decrypt it.
+    workspace_dir = Path(__file__).parent.absolute()
+    temp_dir = workspace_dir / "temp"
+    temp_dir.mkdir(exist_ok=True)
+    
+    temp_file = temp_dir / f"decrypted_{path_obj.name}"
+    
+    # Try decrypting without password first (some have owner restrictions but no user password)
+    try:
+        result = subprocess.run(
+            ["qpdf", "--decrypt", str(path_obj), str(temp_file)],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return str(temp_file), True
+    except Exception as e:
+        print(f"Error decrypting PDF with qpdf (no password): {e}")
+        
+    # Try decrypting with password if provided
+    if password:
+        try:
+            print(f"🔑 PDF is password-protected. Attempting decryption...")
+            result = subprocess.run(
+                ["qpdf", "--decrypt", f"--password={password}", str(path_obj), str(temp_file)],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                print("🔓 PDF successfully decrypted.")
+                return str(temp_file), True
+            else:
+                print(f"❌ Failed to decrypt PDF with password. qpdf error: {result.stderr.strip()}")
+        except Exception as e:
+            print(f"Error decrypting PDF with password: {e}")
+            
+    # Clean up temp file if it exists but decryption failed
+    if temp_file.exists():
+        try:
+            temp_file.unlink()
+        except Exception:
+            pass
+            
+    return pdf_path, False
+
+
 class BankStatementExtractor:
     """Main class for extracting bank statement data from PDFs."""
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, pdf_password: Optional[str] = None):
         """Initialize the extractor with Gemini API key."""
         self.client = genai.Client(api_key=api_key)
+        self.pdf_password = pdf_password or os.getenv('PDF_PASSWORD')
     
     def extract_transactions_from_pdf(self, pdf_path: str) -> List[Transaction]:
         """
@@ -141,36 +220,64 @@ class BankStatementExtractor:
         Returns:
             List of Transaction objects
         """
+        working_pdf_path = pdf_path
+        is_temp = False
         try:
+            # Decrypt PDF if needed
+            working_pdf_path, is_temp = decrypt_pdf_if_needed(pdf_path, self.pdf_password)
+            
             # Create the prompt for Gemini
             prompt = """
-            Extract all bank transactions from this PDF bank statement. 
+            Extract all bank transactions from this PDF bank statement.
             
-            For each transaction, extract:
-            - Date (convert to YYYY-MM-DD format)
-            - Description (full transaction description)
-            - Amount (convert to decimal format with period as decimal separator, no thousands separator)
-              - If the amount has "Kt" or "Cr" it's a credit (positive value)
-              - Otherwise it's a debit (negative value)
-            - Balance (convert to decimal format with period as decimal separator, no thousands separator)
-              - CRITICAL: Account balances can be negative (overdrawn)
-              - If the balance has "Kt" or "Cr" it's a credit (positive value)
-              - If the balance appears without "Kt" or "Cr", or in parentheses () or with a minus sign, it's negative
-              - If the account is overdrawn (negative balance), the balance should be negative
-              - Consider the mathematical relationship: previous_balance + transaction_amount = new_balance
+            FNB statement columns are typically arranged horizontally:
+            - Left: Date and Description (e.g. "18 May POS Purchase Takealot")
+            - Middle/Right: Amount (credits have "Cr" or "Kt", debits do not)
+            - Far Right: Balance (credits have "Cr" or "Kt", debits or overdrawn balances do not)
+            
+            CRITICAL INSTRUCTIONS:
+            1. Extract EVERY single transaction row. Do NOT skip any rows or merge consecutive transactions.
+            2. Carefully align Date, Description, Amount, and Balance horizontally. A common error is misaligning the columns (e.g. matching an amount or balance from one row to the description of another).
+            3. For each transaction, extract:
+               - Date (convert to YYYY-MM-DD format)
+               - Description (full transaction description)
+               - Amount (convert to decimal format with period as decimal separator, no thousands separator. Positive for credits with "Cr"/"Kt", negative for debits)
+               - Balance (convert to decimal format with period as decimal separator, no thousands separator. Positive for balances with "Cr"/"Kt", negative for overdrawn/debit balances)
+            4. Double-check your work: ensure that for every transaction, previous_balance + transaction_amount = new_balance. If a mathematical discrepancy occurs, you have likely misaligned the rows or skipped a transaction. Correct it before responding.
             
             Only extract actual transaction rows, not headers or summary information.
-            Ignore any metadata, account information, or non-transaction data.
             """
             
-            # Count tokens before making the request
-            contents = [
-                types.Part.from_bytes(
-                    data=Path(pdf_path).read_bytes(),
-                    mime_type='application/pdf',
-                ),
-                prompt
-            ]
+            # Try to get layout-preserved text of the PDF
+            pdf_text = None
+            try:
+                result = subprocess.run(
+                    ["pdftotext", "-layout", working_pdf_path, "-"],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='ignore'
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    pdf_text = result.stdout
+                    print("✅ Successfully extracted layout-preserved text from PDF.")
+            except Exception as e:
+                print(f"Warning: Failed to extract layout text: {e}")
+
+            if pdf_text:
+                contents = [
+                    pdf_text,
+                    prompt
+                ]
+            else:
+                # Fallback to raw PDF bytes
+                contents = [
+                    types.Part.from_bytes(
+                        data=Path(working_pdf_path).read_bytes(),
+                        mime_type='application/pdf',
+                    ),
+                    prompt
+                ]
             
             # Count tokens before making the request
             token_count = self.client.models.count_tokens(
@@ -206,6 +313,14 @@ class BankStatementExtractor:
         except Exception as e:
             print(f"Error extracting transactions from {pdf_path}: {str(e)}")
             return []
+        finally:
+            # Clean up temporary decrypted file
+            if is_temp and working_pdf_path and os.path.exists(working_pdf_path):
+                try:
+                    os.unlink(working_pdf_path)
+                    print(f"Cleaned up temporary file: {working_pdf_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete temporary decrypted file {working_pdf_path}: {e}")
     
     def save_transactions_to_csv(self, transactions: List[Transaction], output_path: str):
         """

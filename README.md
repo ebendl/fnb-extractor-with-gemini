@@ -13,6 +13,7 @@ A Python script that uses Google's Gemini 2.5 Flash model to extract transaction
 - Transaction balance validation for data integrity
 - Token counting for API usage monitoring
 - CSV file combination utility for merging multiple transaction files
+- Export to the Cashflow Tracker import format
 
 ## Setup
 
@@ -61,6 +62,64 @@ Example:
 # Combine all CSV files in a directory into one file
 python combine_csv_files.py /path/to/csv/folder/
 ```
+
+### Convert CSV to Excel
+
+```bash
+python csv_to_excel.py <path_to_csv_file_or_folder>
+```
+
+Example:
+```bash
+# Convert all CSVs in a directory to Excel
+python csv_to_excel.py /path/to/csv/folder/
+```
+
+The Excel output will include specific columns for accounting/budgeting:
+- **Date**: Recognized Excel date format
+- **Debit amount**: Negative values (expenses)
+- **Credit amount**: Positive values (income)
+- **Saldo**: The balance column
+- **Calculated saldo**: Copy of balance
+- **transaction description**: The original description
+
+### Convert for Cashflow Tracker Import
+
+```bash
+python to_cashflow_tracker.py <path_to_file_or_folder>
+```
+
+Converts this repo's CSV or Excel output into the Excel-format CSV that
+[`cashflow_tracker`](https://github.com/ebendl/cashflow_tracker) imports
+(`POST /api/v1/import/preview` then `/commit`, or its seed runner).
+
+```bash
+# One statement file (.csv or .xlsx) -> FIRST_..._65_cashflow.csv
+python to_cashflow_tracker.py /path/to/FIRST_BUSINESS_ZERO_ACCOUNT_65.csv
+
+# A whole folder (one account) -> a single combined <FolderName>_cashflow.csv
+python to_cashflow_tracker.py /path/to/statement/folder/
+
+# ...or one output file per statement instead of a combined one
+python to_cashflow_tracker.py /path/to/statement/folder/ --per-file
+```
+
+Output columns: `Salary Month, Salary, Date, Debit, Credit, Saldo, Calc Saldo,
+Bank Note, Split, Category, Booked, Note`
+
+- `Date` is written as `03 Aug`, the format the importer expects
+- `Debit` holds negative amounts, `Credit` positive; the unused side gets `-`
+- `Saldo` and `Calc Saldo` both carry the statement balance
+- `Bank Note` holds the transaction description
+- `Split`, `Category`, `Booked` and `Note` are left blank for categorisation in the app
+
+**`Salary Month` is left blank and must be filled in by hand before importing.**
+The importer skips rows with a blank salary month, and infers each transaction's
+year from it (the `Date` column carries no year).
+
+When given a folder, the script reads one file per statement — preferring the
+`.csv` where both a `.csv` and `.xlsx` exist — and skips `combined_transactions.*`
+and its own `*_cashflow.csv` output, so re-running it is safe.
 
 ## Output Format
 
